@@ -1,0 +1,445 @@
+import React, { useState, useEffect } from 'react';
+import { Activity, X, CheckCircle, AlertCircle, Clock } from 'lucide-react';
+
+const ScanProgress = ({ scanId, config, progressData, onCancel, onComplete, onSudoRequired }) => {
+  const [scanStatus, setScanStatus] = useState(null);
+  const [currentStage, setCurrentStage] = useState('waiting');
+  const [stageProgress, setStageProgress] = useState({});
+
+  useEffect(() => {
+    if (progressData) {
+      setCurrentStage(progressData.stage);
+
+      if (progressData.stage === 'completed') {
+        // Fetch final results
+        fetchResults();
+      } else if (progressData.stage === 'failed') {
+        setScanStatus('failed');
+      }
+    }
+  }, [progressData]);
+
+  // Poll scan status to detect failures
+  useEffect(() => {
+    if (!scanId) return;
+
+    let hasShownSudoModal = false; // Prevent multiple modal calls
+
+    const pollStatus = async () => {
+      try {
+        const response = await fetch(`http://localhost:3001/api/scan/status/${scanId}`);
+        if (response.ok) {
+          const status = await response.json();
+          if (status.status === 'failed') {
+            setScanStatus('failed');
+            setCurrentStage('failed');
+
+            // Check if it's a sudo privileges error
+            if (status.error && status.error.includes('root privileges')) {
+              if (onSudoRequired && !hasShownSudoModal) {
+                hasShownSudoModal = true; // Prevent multiple calls
+                onSudoRequired();
+                return; // Don't call onComplete for sudo errors
+              }
+            }
+
+            // Emit failed event to parent for other errors
+            if (onComplete) {
+              onComplete(null, status.error);
+            }
+          } else if (status.status === 'running') {
+            // Reset the modal flag if scan is still running
+            hasShownSudoModal = false;
+          }
+        }
+      } catch (error) {
+        console.error('Failed to poll scan status:', error);
+      }
+    };
+
+    // Poll every 2 seconds
+    const interval = setInterval(pollStatus, 2000);
+
+    // Initial poll
+    pollStatus();
+
+    return () => clearInterval(interval);
+  }, [scanId, onComplete, onSudoRequired]);
+
+  const fetchResults = async () => {
+    try {
+      const response = await fetch(`http://localhost:3001/api/scan/results/${scanId}`);
+      if (response.ok) {
+        const results = await response.json();
+        onComplete(results);
+      }
+    } catch (error) {
+      console.error('Failed to fetch results:', error);
+    }
+  };
+
+  const getStageInfo = (stage) => {
+    const stages = {
+      'started': { label: 'Initializing', icon: Clock, color: 'text-blue-500' },
+      'masscan-start': { label: 'Masscan Scanning', icon: Activity, color: 'text-blue-500' },
+      'masscan-complete': { label: 'Masscan Complete', icon: CheckCircle, color: 'text-green-500' },
+      'enumeration-start': { label: 'SMB Enumeration', icon: Activity, color: 'text-blue-500' },
+      'enumeration-progress': { label: 'SMB Enumeration', icon: Activity, color: 'text-blue-500' },
+      'enumeration-complete': { label: 'Enumeration Complete', icon: CheckCircle, color: 'text-green-500' },
+      'validation-start': { label: 'Access Validation', icon: Activity, color: 'text-blue-500' },
+      'validation-progress': { label: 'Access Validation', icon: Activity, color: 'text-blue-500' },
+      'validation-complete': { label: 'Validation Complete', icon: CheckCircle, color: 'text-green-500' },
+      'completed': { label: 'Scan Complete', icon: CheckCircle, color: 'text-green-500' },
+      'failed': { label: 'Scan Failed', icon: AlertCircle, color: 'text-red-500' },
+      'cancelled': { label: 'Scan Cancelled', icon: X, color: 'text-yellow-500' }
+    };
+    return stages[stage] || { label: 'Unknown', icon: Activity, color: 'text-gray-500' };
+  };
+
+  const stageInfo = getStageInfo(currentStage);
+  const StageIcon = stageInfo.icon;
+
+  return (
+    <div className="max-w-5xl mx-auto">
+      <div className="bg-card rounded-lg border border-border p-8">
+        <div className="flex items-center justify-between mb-8">
+          <div className="flex items-center space-x-4">
+            <div className="p-3 bg-primary/10 rounded-full">
+              <Activity className="h-8 w-8 text-primary animate-pulse" />
+            </div>
+            <div>
+              <h2 className="text-2xl font-bold text-foreground">Scan Progress</h2>
+              <p className="text-muted-foreground">Monitoring network reconnaissance in real-time</p>
+            </div>
+          </div>
+          <button
+            onClick={onCancel}
+            className="px-6 py-3 text-base bg-destructive text-destructive-foreground rounded-lg hover:bg-destructive/90 transition-colors font-medium"
+          >
+            Cancel Scan
+          </button>
+        </div>
+
+        {/* Current Stage */}
+        <div className="mb-8">
+          <div className="flex items-center space-x-4 p-6 bg-gradient-to-r from-muted to-muted/50 rounded-xl border border-border/50">
+            <div className="p-3 bg-background rounded-full border border-border">
+              <StageIcon className={`h-6 w-6 ${stageInfo.color}`} />
+            </div>
+            <div className="flex-1">
+              <h3 className="text-lg font-semibold text-foreground mb-1">{stageInfo.label}</h3>
+              {progressData?.data?.message && (
+                <p className="text-base text-muted-foreground">{progressData.data.message}</p>
+              )}
+              {currentStage === 'masscan-start' && (
+                <div className="mt-3 p-3 bg-primary/5 rounded-lg border border-primary/20">
+                  <p className="text-sm text-primary font-medium">
+                    🔍 Masscan is actively scanning your network for open SMB ports (139, 445)
+                  </p>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+
+        {/* Progress Details */}
+        {progressData?.data && (
+          <div className="space-y-6">
+            {/* Hosts found */}
+            {progressData.data.hostsFound !== undefined && (
+              <div className="p-4 bg-background rounded-lg border border-border">
+                <div className="flex justify-between items-center mb-2">
+                  <span className="text-base font-semibold text-foreground">Hosts with SMB ports open:</span>
+                  <span className="text-lg font-bold font-mono bg-primary text-primary-foreground px-3 py-1 rounded-lg">
+                    {progressData.data.hostsFound}
+                  </span>
+                </div>
+                <p className="text-sm text-muted-foreground">
+                  Found hosts with open SMB ports (139 or 445) in your network
+                </p>
+              </div>
+            )}
+
+            {/* Masscan progress bar */}
+            {currentStage === 'masscan-start' && (
+              <div className="p-6 bg-gradient-to-r from-blue-50 to-blue-50/50 dark:from-blue-950/20 dark:to-blue-950/10 rounded-lg border border-blue-200 dark:border-blue-800">
+                <div className="flex justify-between items-center mb-3">
+                  <span className="text-lg font-semibold text-blue-900 dark:text-blue-100">Port Scanning Progress</span>
+                  <span className="text-sm font-medium text-blue-700 dark:text-blue-300">Active scanning...</span>
+                </div>
+                <div className="w-full bg-blue-100 dark:bg-blue-900 rounded-full h-4 mb-3 overflow-hidden">
+                  <div className="bg-blue-600 h-4 rounded-full animate-pulse" style={{ width: '75%' }}></div>
+                </div>
+                <div className="flex items-center justify-between text-sm">
+                  <p className="text-blue-800 dark:text-blue-200">
+                    🔍 Scanning network for open SMB ports (139, 445)
+                  </p>
+                  <span className="text-blue-600 dark:text-blue-400 font-medium">High performance</span>
+                </div>
+              </div>
+            )}
+
+            {/* Enumeration progress */}
+            {(progressData.data.processed !== undefined && progressData.data.total !== undefined) && (
+              <div className="p-6 bg-gradient-to-r from-green-50 to-green-50/50 dark:from-green-950/20 dark:to-green-950/10 rounded-lg border border-green-200 dark:border-green-800">
+                <div className="flex justify-between items-center mb-3">
+                  <span className="text-lg font-semibold text-green-900 dark:text-green-100">SMB Enumeration Progress</span>
+                  <span className="text-sm font-medium text-green-700 dark:text-green-300">
+                    {progressData.data.processed} / {progressData.data.total}
+                  </span>
+                </div>
+                <div className="w-full bg-green-100 dark:bg-green-900 rounded-full h-4 mb-3 overflow-hidden">
+                  <div
+                    className="bg-green-600 h-4 rounded-full transition-all duration-500 ease-out"
+                    style={{ width: `${(progressData.data.processed / progressData.data.total) * 100}%` }}
+                  ></div>
+                </div>
+                <div className="flex items-center justify-between text-sm">
+                  <p className="text-green-800 dark:text-green-200">
+                    🔍 Currently processing: <span className="font-mono font-medium">{progressData.data.currentHost}</span>
+                  </p>
+                  <span className="text-green-600 dark:text-green-400 font-medium">
+                    {Math.round((progressData.data.processed / progressData.data.total) * 100)}% Complete
+                  </span>
+                </div>
+              </div>
+            )}
+
+            {/* Validation progress */}
+            {(progressData.data.validated !== undefined && progressData.data.total !== undefined) && (
+              <div className="p-6 bg-gradient-to-r from-purple-50 to-purple-50/50 dark:from-purple-950/20 dark:to-purple-950/10 rounded-lg border border-purple-200 dark:border-purple-800">
+                <div className="flex justify-between items-center mb-3">
+                  <span className="text-lg font-semibold text-purple-900 dark:text-purple-100">Access Validation Progress</span>
+                  <span className="text-sm font-medium text-purple-700 dark:text-purple-300">
+                    {progressData.data.validated} / {progressData.data.total}
+                  </span>
+                </div>
+                <div className="w-full bg-purple-100 dark:bg-purple-900 rounded-full h-4 mb-3 overflow-hidden">
+                  <div
+                    className="bg-purple-600 h-4 rounded-full transition-all duration-500 ease-out"
+                    style={{ width: `${(progressData.data.validated / progressData.data.total) * 100}%` }}
+                  ></div>
+                </div>
+                <div className="flex items-center justify-between text-sm">
+                  <p className="text-purple-800 dark:text-purple-200">
+                    🛡️ Testing read access to discovered shares
+                  </p>
+                  <span className="text-purple-600 dark:text-purple-400 font-medium">
+                    {Math.round((progressData.data.validated / progressData.data.total) * 100)}% Complete
+                  </span>
+                </div>
+              </div>
+            )}
+
+            {/* Additional progress bar for enumeration */}
+            {progressData.data.processed !== undefined && progressData.data.total !== undefined && currentStage.includes('enumeration') && (
+              <div className="space-y-2">
+                <div className="flex justify-between items-center">
+                  <span className="text-sm font-medium">SMB Enumeration Progress:</span>
+                  <span className="text-sm text-muted-foreground">
+                    {progressData.data.processed}/{progressData.data.total}
+                  </span>
+                </div>
+                <div className="w-full bg-muted rounded-full h-2">
+                  <div
+                    className="bg-primary h-2 rounded-full transition-all duration-300"
+                    style={{ width: `${(progressData.data.processed / progressData.data.total) * 100}%` }}
+                  ></div>
+                </div>
+                {progressData.data.currentHost && (
+                  <p className="text-xs text-muted-foreground">
+                    Processing: {progressData.data.currentHost}
+                  </p>
+                )}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Scan Configuration Summary */}
+        <div className="mt-6 p-4 bg-muted/50 rounded-lg">
+          <h4 className="font-medium text-foreground mb-2">Scan Configuration</h4>
+          <div className="grid grid-cols-2 gap-4 text-sm">
+            <div>
+              <span className="text-muted-foreground">IP Range:</span>
+              <span className="ml-2 font-mono">{config?.ipRange}</span>
+            </div>
+            <div>
+              <span className="text-muted-foreground">Ports:</span>
+              <span className="ml-2 font-mono">{config?.ports}</span>
+            </div>
+            <div>
+              <span className="text-muted-foreground">Rate:</span>
+              <span className="ml-2 font-mono">{config?.rate} pps</span>
+            </div>
+            <div>
+              <span className="text-muted-foreground">Seed:</span>
+              <span className="ml-2 font-mono">{config?.seed}</span>
+            </div>
+          </div>
+        </div>
+
+        {/* Error Display */}
+        {scanStatus === 'failed' && progressData?.data?.error && (
+          <div className="mt-4 p-4 bg-destructive/10 border border-destructive/20 rounded-lg">
+            <div className="flex items-center space-x-2">
+              <AlertCircle className="h-4 w-4 text-destructive" />
+              <span className="font-medium text-destructive">Scan Failed</span>
+            </div>
+            <p className="text-sm text-destructive/80 mt-1">{progressData.data.error}</p>
+          </div>
+        )}
+            {/* Hosts found */}
+            {progressData.data.hostsFound !== undefined && (
+              <div className="p-4 bg-background rounded-lg border border-border">
+                <div className="flex justify-between items-center mb-2">
+                  <span className="text-base font-semibold text-foreground">Hosts with SMB ports open:</span>
+                  <span className="text-lg font-bold font-mono bg-primary text-primary-foreground px-3 py-1 rounded-lg">
+                    {progressData.data.hostsFound}
+                  </span>
+                </div>
+                <p className="text-sm text-muted-foreground">
+                  Found hosts with open SMB ports (139 or 445) in your network
+                </p>
+              </div>
+            )}
+
+            {/* Masscan progress bar */}
+            {currentStage === 'masscan-start' && (
+              <div className="p-6 bg-gradient-to-r from-blue-50 to-blue-50/50 dark:from-blue-950/20 dark:to-blue-950/10 rounded-lg border border-blue-200 dark:border-blue-800">
+                <div className="flex justify-between items-center mb-3">
+                  <span className="text-lg font-semibold text-blue-900 dark:text-blue-100">Port Scanning Progress</span>
+                  <span className="text-sm font-medium text-blue-700 dark:text-blue-300">Active scanning...</span>
+                </div>
+                <div className="w-full bg-blue-100 dark:bg-blue-900 rounded-full h-4 mb-3 overflow-hidden">
+                  <div className="bg-blue-600 h-4 rounded-full animate-pulse" style={{ width: '75%' }}></div>
+                </div>
+                <div className="flex items-center justify-between text-sm">
+                  <p className="text-blue-800 dark:text-blue-200">
+                    🔍 Scanning network for open SMB ports (139, 445)
+                  </p>
+                  <span className="text-blue-600 dark:text-blue-400 font-medium">High performance</span>
+                </div>
+              </div>
+            )}
+
+            {/* Enumeration progress */}
+            {(progressData.data.processed !== undefined && progressData.data.total !== undefined) && (
+              <div className="p-6 bg-gradient-to-r from-green-50 to-green-50/50 dark:from-green-950/20 dark:to-green-950/10 rounded-lg border border-green-200 dark:border-green-800">
+                <div className="flex justify-between items-center mb-3">
+                  <span className="text-lg font-semibold text-green-900 dark:text-green-100">SMB Enumeration Progress</span>
+                  <span className="text-sm font-medium text-green-700 dark:text-green-300">
+                    {progressData.data.processed} / {progressData.data.total}
+                  </span>
+                </div>
+                <div className="w-full bg-green-100 dark:bg-green-900 rounded-full h-4 mb-3 overflow-hidden">
+                  <div
+                    className="bg-green-600 h-4 rounded-full transition-all duration-500 ease-out"
+                    style={{ width: `${(progressData.data.processed / progressData.data.total) * 100}%` }}
+                  ></div>
+                </div>
+                {progressData.data.currentHost && (
+                  <div className="flex items-center justify-between text-sm">
+                    <p className="text-green-800 dark:text-green-200">
+                      🔍 Currently processing: <span className="font-mono font-medium">{progressData.data.currentHost}</span>
+                    </p>
+                    <span className="text-green-600 dark:text-green-400 font-medium">
+                      {Math.round((progressData.data.processed / progressData.data.total) * 100)}% Complete
+                    </span>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Validation progress */}
+            {(progressData.data.validated !== undefined && progressData.data.total !== undefined) && (
+              <div className="p-6 bg-gradient-to-r from-purple-50 to-purple-50/50 dark:from-purple-950/20 dark:to-purple-950/10 rounded-lg border border-purple-200 dark:border-purple-800">
+                <div className="flex justify-between items-center mb-3">
+                  <span className="text-lg font-semibold text-purple-900 dark:text-purple-100">Access Validation Progress</span>
+                  <span className="text-sm font-medium text-purple-700 dark:text-purple-300">
+                    {progressData.data.validated} / {progressData.data.total}
+                  </span>
+                </div>
+                <div className="w-full bg-purple-100 dark:bg-purple-900 rounded-full h-4 mb-3 overflow-hidden">
+                  <div
+                    className="bg-purple-600 h-4 rounded-full transition-all duration-500 ease-out"
+                    style={{ width: `${(progressData.data.validated / progressData.data.total) * 100}%` }}
+                  ></div>
+                </div>
+                <div className="flex items-center justify-between text-sm">
+                  <p className="text-purple-800 dark:text-purple-200">
+                    🛡️ Testing read access to discovered shares
+                  </p>
+                  <span className="text-purple-600 dark:text-purple-400 font-medium">
+                    {Math.round((progressData.data.validated / progressData.data.total) * 100)}% Complete
+                  </span>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
+            {/* Validation progress */}
+            {(progressData.data.validated !== undefined && progressData.data.total !== undefined) && (
+              <div className="space-y-2">
+                <div className="flex justify-between items-center">
+                  <span className="text-sm font-medium">Access Validation Progress:</span>
+                  <span className="text-sm text-muted-foreground">
+                    {progressData.data.validated}/{progressData.data.total}
+                  </span>
+                </div>
+                <div className="w-full bg-muted rounded-full h-2">
+                  <div
+                    className="bg-primary h-2 rounded-full transition-all duration-300"
+                    style={{ width: `${(progressData.data.validated / progressData.data.total) * 100}%` }}
+                  ></div>
+                </div>
+                {progressData.data.currentHost && progressData.data.currentShare && (
+                  <p className="text-xs text-muted-foreground">
+                    Validating: {progressData.data.currentHost} - {progressData.data.currentShare}
+                  </p>
+                )}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Scan Configuration Summary */}
+        <div className="mt-6 p-4 bg-muted/50 rounded-lg">
+          <h4 className="font-medium text-foreground mb-2">Scan Configuration</h4>
+          <div className="grid grid-cols-2 gap-4 text-sm">
+            <div>
+              <span className="text-muted-foreground">IP Range:</span>
+              <span className="ml-2 font-mono">{config?.ipRange}</span>
+            </div>
+            <div>
+              <span className="text-muted-foreground">Ports:</span>
+              <span className="ml-2 font-mono">{config?.ports}</span>
+            </div>
+            <div>
+              <span className="text-muted-foreground">Rate:</span>
+              <span className="ml-2 font-mono">{config?.rate} pps</span>
+            </div>
+            <div>
+              <span className="text-muted-foreground">Seed:</span>
+              <span className="ml-2 font-mono">{config?.seed}</span>
+            </div>
+          </div>
+        </div>
+
+        {/* Error Display */}
+        {scanStatus === 'failed' && progressData?.data?.error && (
+          <div className="mt-4 p-4 bg-destructive/10 border border-destructive/20 rounded-lg">
+            <div className="flex items-center space-x-2">
+              <AlertCircle className="h-4 w-4 text-destructive" />
+              <span className="font-medium text-destructive">Scan Failed</span>
+            </div>
+            <p className="text-sm text-destructive/80 mt-1">{progressData.data.error}</p>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+};
+
+export default ScanProgress;
